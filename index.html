@@ -1,0 +1,739 @@
+<!DOCTYPE html>
+<html lang="en-IN"><script type="text/javascript">// Promises 
+var _tp_promises = {};
+//Get Message From content script 
+window.addEventListener("message", function(event) { 
+		if(event.source !== window) return;			 
+		if(event.data.src && (event.data.src === "content.js")) { 
+			//console.log("Page received: "); 						
+			//console.log(event.data); 							
+			// Get the promise									
+			if(event.data.nonce) {								
+				 var p = _tp_promises[event.data.nonce]; 		
+				 // resolve										
+				 if(event.data.status_cd === 1){				
+					p.resolve(event.data.result);				
+				 }else{											
+				 // reject										
+					p.reject(new Error(event.data.result));		
+				 }												
+				 delete _tp_promises[event.data.nonce];			
+			}else {  											
+				console.log("No nonce in event msg");			
+			}													
+		}														
+	});															
+																
+    var SignerDigital= new TpCrypto();								
+	function TpCrypto (){										
+																
+	var OSName = GetOS();													
+	var OSSupported = (OSName == "Windows" || OSName == "Linux") ? true : false; 
+	function nonce() {											
+	  var val = ""; 										    
+	  var hex = "abcdefghijklmnopqrstuvwxyz0123456789";	         	
+	  for(var i = 0; i < 16; i++)							     	
+		val += hex.charAt(Math.floor(Math.random() * hex.length));	
+	  return val;											    	
+	}															
+																
+	function messagePromise(msg) { 								
+		return new Promise(async function(sdResolve, sdReject) { 			
+			if (msg["action"] == "GenCSR" || msg["action"] == "ImportCER")	
+			{																
+				if (!OSSupported)											
+				{																
+					sdReject(new Error(OSName + " OS Not Supported."));	
+					return;														
+				}																
+				if(!await checkSDEnrolledCA(msg["certIssuer"]))				
+				{															
+					sdReject(new Error("This Certifying Authority is not enrolled in Signer.Digital Browser Extension for Certificate Enrollment/Download. Contact your Certifying Authority."));	
+					return;													
+				}															
+			}																
+			if(msg["action"] == "GetSelCertAndSCSNUsingPKCS11" || msg["action"] == "UnlockSC")	
+			{																					
+			   if (!OSSupported)																
+			   {																				
+				 sdReject(new Error(OSName + " OS Not Supported."));							
+				 return;																		
+			   }																				
+				if(!(await checkSDEnrolledSCUnlockHost(msg["hostDomain"])))						
+				{																				
+					sdReject(new Error("This domain (" + msg["hostDomain"] +") is not enrolled in Signer.Digital Browser Extension for SmartCard Unlock Feature. Contact your Vendor."));	
+					return;																		
+				}																				
+			}																					
+			// amend with necessary metadata 					
+			msg["nonce"] = nonce(); 							
+			msg["src"] = "user_page.js"; 						
+			msg["browser"] = "firefox"; 						
+			// send message 									
+			window.postMessage(msg, "*"); 						
+			// and store promise callbacks 						
+			_tp_promises[msg.nonce] = {							
+				resolve: sdResolve, 								
+				reject: sdReject 									
+			}; 													
+		}); 													
+	}															
+																			
+	async function checkSDEnrolledCA(certIssuer)							
+	{																		
+		var caList = ["AD5HAb+Ij2mmK1hTWpGGdK/xbGLtpQDerMJx35zmSJI=",	//CISPL Signer.Digital DEMO	
+			//add Enrolled CA to this list	
+					  "e6Nrw12cao77xcpOWlMHt8TqsVBWkv10imJ1IxjN2Vw=",	//PantaSign<space> 
+					  "0vViQwEaMomrPzhpI0GjyG532UIjlT2Sb54DQCXt57o=",	//Verasys<space> 
+					  "vgm1CpeMOn7ifR9Ltt0UAMYs2A3K1JpkGIiI1dlJXxM="];	//ProDigiSign<space> 
+		const sha256OfIssuer = await SDGetSha256(certIssuer);				
+		if (caList.includes(sha256OfIssuer))								
+			return true;													
+		else																
+			return false;													
+	}																		
+	async function checkSDEnrolledSCUnlockHost(hostDomain)					
+	{																		
+		var ScUnlockDomainsList = ["SZYN5YgOjGh0NBcPZHZgW4/krrmihjLHmVzzuoMdl2M=",  //localhost	 
+			//add licensed domains to this list 
+								   "No0nRCis0hkuq4SQoaG4B2ucGz6gT+MMpcHLBFP6jbU="];	//update.epasstokens.com  
+		const sha256OfHostDomain = await SDGetSha256(hostDomain);			
+		if (ScUnlockDomainsList.includes(sha256OfHostDomain))				
+			return true;													
+		else																
+			return false;													
+	}																		
+	async function SDGetSha256(message)										
+	{																		
+		// encode as UTF-8													
+		const msgBuffer = new TextEncoder().encode(message);				
+		// hash the message													
+		const hashBuffer = await crypto.subtle.digest("SHA-256", msgBuffer);
+		const bytes = new Uint8Array(hashBuffer);							
+		var binary = "";													
+		for (var i = 0; i < bytes.byteLength; i++) {						
+			binary += String.fromCharCode(bytes[i]);						
+		}																	
+		return window.btoa(binary);											
+	};																		
+																			
+	this.ConsoleLogging = function(Switch = "ON"){							
+		document.dispatchEvent(new CustomEvent("ConsoleLogging", {detail : Switch}));	
+	}																					
+	this.signGstHash = function(hash, certThumbPrint = "", x509RevocationMode = 0){										
+		var msg= { action:"SignHashCms", hash:hash, certThumbPrint:certThumbPrint, x509RevocationMode:x509RevocationMode};			
+		return messagePromise(msg);																
+	}																							
+	this.signITHash = function(hash, PAN, certThumbPrint = "", x509RevocationMode = 0){														
+		var msg= { action:"ITReturnSign", hash:hash, PAN:PAN, certThumbPrint:certThumbPrint, x509RevocationMode:x509RevocationMode};			
+		return messagePromise(msg);								
+	}															
+	this.signIceGate = function(b64Data, certThumbPrint = "", x509RevocationMode = 0){														
+		var msg= { action:"IceGateSignJson", b64Data:b64Data, certThumbPrint:certThumbPrint, x509RevocationMode:x509RevocationMode};			
+		return messagePromise(msg);								
+	}															
+	this.getSelectedCertificate = function(certThumbPrint = "", showExpired = false, keyUsageFilter = 128, x509RevocationMode = 0){					
+		var msg= { action:"GetSelCertFromToken", certThumbPrint:certThumbPrint, showExpired:showExpired, keyUsageFilter:keyUsageFilter, x509RevocationMode:x509RevocationMode};				
+		return messagePromise(msg);								
+	}															
+	this.signPdfHash = function(hash, certThumbPrint, certAlgorithm, x509RevocationMode = 0){					
+		var msg= { action:"PdfSignFromToken", hash:hash,certThumbPrint:certThumbPrint,hashAlgorithm:certAlgorithm, x509RevocationMode:x509RevocationMode};		
+		return messagePromise(msg);								
+	}															
+	this.signAuthToken = function(authtoken, certAlgorithm, certThumbPrint = "", showExpired = false, x509RevocationMode = 0){					
+		var msg= { action:"SignAuthToken", authToken:authtoken, hashAlgorithm:certAlgorithm, certThumbPrint:certThumbPrint, showExpired:showExpired, x509RevocationMode:x509RevocationMode};		
+		return messagePromise(msg);								
+	}															
+	this.signHash = function(hash, certAlgorithm, certThumbPrint = "", x509RevocationMode = 0){					
+		var msg= { action:"SignHash", hash:hash, hashAlgorithm:certAlgorithm, certThumbPrint:certThumbPrint, x509RevocationMode:x509RevocationMode};		
+		return messagePromise(msg);								
+	}															
+	this.signHashCms = function(hash, certAlgorithm, certIncludeOptions = 2, certThumbPrint = "", x509RevocationMode = 0){		
+		var msg= { action:"SignHashCms", hash:hash, hashAlgorithm:certAlgorithm, certIncludeOptions:certIncludeOptions, certThumbPrint:certThumbPrint, x509RevocationMode:x509RevocationMode};	
+		return messagePromise(msg);											
+	}																		
+	this.signHashCAdESBr = function(hash, certAlgorithm, certIncludeOptions = 2, certThumbPrint = "", x509RevocationMode = 0){		
+		var msg= { action:"SignCAdESBr", hash:hash, hashAlgorithm:certAlgorithm, certIncludeOptions:certIncludeOptions, certThumbPrint:certThumbPrint, x509RevocationMode:x509RevocationMode};	
+		return messagePromise(msg);											
+	}																		
+	this.signHashCAdESEg = function(hash, certAlgorithm, certIncludeOptions = 2, certThumbPrint = "", x509RevocationMode = 0){		
+		var msg= { action:"SignCAdESEg", hash:hash, hashAlgorithm:certAlgorithm, certIncludeOptions:certIncludeOptions, certThumbPrint:certThumbPrint, x509RevocationMode:x509RevocationMode};	
+		return messagePromise(msg);											
+	}																		
+	this.signXML = function(xmlDoc, xmlSignParms, certThumbPrint, x509RevocationMode = 0){					
+		var msg= { action:"SignXML", xmlDoc:xmlDoc, xmlSignParms:xmlSignParms, certThumbPrint:certThumbPrint, x509RevocationMode:x509RevocationMode};		
+		return messagePromise(msg);								
+	}															
+	this.encryptB64Data = function(b64Data, useOAEPPadding, certThumbPrint = "", showExpired = false, keyUsageFilter = 32, x509RevocationMode = 0){					
+		var msg= { action:"EncryptB64Data", b64Data:b64Data, useOAEPPadding:useOAEPPadding, certThumbPrint:certThumbPrint, showExpired:showExpired, keyUsageFilter:keyUsageFilter, x509RevocationMode:x509RevocationMode};		
+		return messagePromise(msg);								
+	}															
+	this.decryptB64Data = function(b64Data, useOAEPPadding, certThumbPrint = "", showExpired = false, keyUsageFilter = 32, x509RevocationMode = 0){					
+		var msg= { action:"DecryptB64Data", b64Data:b64Data, useOAEPPadding:useOAEPPadding, certThumbPrint:certThumbPrint, showExpired:showExpired, keyUsageFilter:keyUsageFilter, x509RevocationMode:x509RevocationMode};		
+		return messagePromise(msg);								
+	}															
+	this.getPCSCReaders = function(onlyConnected = true){				
+		var msg= { action:"GetPCSCReaders", onlyConnected:onlyConnected};			
+		return messagePromise(msg);											
+	}																		
+	this.genCSR = function(PKCS11Lib, certSubject, certIssuer, keyBits = 2048, hashAlgorithm = "SHA256", forceUserPinChangeIfDefault = false, extensions = null){				
+		var msg= { action:"GenCSR", PKCS11Lib:PKCS11Lib, certSubject:certSubject, certIssuer:certIssuer, keyBits:keyBits, hashAlgorithm:hashAlgorithm, forceUserPinChangeIfDefault:forceUserPinChangeIfDefault, extensions:extensions};			
+		return messagePromise(msg);											
+	}																		
+	this.importCer = function(PKCS11Lib, b64Payload, certIssuer){		
+		var msg= { action:"ImportCER", PKCS11Lib:PKCS11Lib, b64Data:b64Payload, certIssuer:certIssuer};		
+		return messagePromise(msg);											
+	}																		
+	this.getSCDetailsAndCerts = function(PKCS11Lib){						
+		var msg= { action:"GetSCDetailsAndCerts", PKCS11Lib:PKCS11Lib};		
+		return messagePromise(msg);											
+	}																		
+	this.getSelCertAndSCSNUsingPKCS11 = function(PKCS11Lib, hostDomain){		
+		var msg= { action:"GetSelCertAndSCSNUsingPKCS11", PKCS11Lib:PKCS11Lib, hostDomain:hostDomain};		
+		return messagePromise(msg);											
+	}																		
+	this.unlockSC = function(PKCS11Lib, soPIN, hostDomain){					
+		var msg= { action:"UnlockSC", PKCS11Lib:PKCS11Lib, soPIN: soPIN, hostDomain:hostDomain};   
+		return messagePromise(msg);											
+	}																		
+	this.getHostDetails = function(){										
+		var msg= { action:"GetHostDetails"};								
+		return messagePromise(msg);											
+	}																		
+	this.sm = function(msg){												
+		return messagePromise(msg);											
+	}																		
+	this.OSName = GetOS();													
+	this.OSSupported = (this.OSName == "Windows" || this.OSName == "Linux") ? true : false; 
+	this.getPkcsLibBySCName = function(SCName)								
+        {																	
+            let winHashMap = new Map([										
+                ["HyperSecu HYP2003", "eps2003csp11v2.dll"],				
+                ["SafeNet eToken", "eTPKCS11.dll"],							
+                ["PROXKey Watchdata", "SignatureP11.dll"],					
+                ["Bit4id tokenME", "bit4ipki.dll"],							
+                ["Longmai mToken", "CryptoIDA_pkcs11.dll"]					
+            ]);																
+            let linuxHashMap = new Map([									
+                ["HyperSecu HYP2003", "libcastle_v2.so.1.0.0"],					
+                ["SafeNet eToken", "libeTPkcs11.so"],				
+                ["PROXKey Watchdata", "libwdpkcs_SignatureP11.so"],							
+                ["mToken CryptoID CSP", "libcryptoid_pkcs11.so"]							
+            ]);																
+			var SCNotEnrolledMsg = "Smartcard Not enrolled in Signer.Digital Browser Extension. Can still be used by passing pkcs#11 driver lib name in PKCS11Lib param."	 
+            if (this.OSName == "Windows") {										
+                if (SCName == "Windows Certificate Store")					
+                    return "Microsoft Enhanced RSA and AES Cryptographic Provider";									
+                else if (winHashMap.has(SCName))				
+                    return winHashMap.get(SCName);					
+				else														
+					return SCNotEnrolledMsg; 	
+            }																
+            if (this.OSName = "Linux") {											
+				if (linuxHashMap.has(SCName))							
+					return linuxHashMap.get(SCName);					
+				else														
+					return SCNotEnrolledMsg; 							
+			}																
+			else {															
+                return "OS Not Supported";									
+            }																
+        }																	
+	this.getSCNameByReaderName = function(ReaderName)								
+        {																	
+            let winHashMap = new Map([										
+                ["HYPERSECU USB TOKEN 0", "HyperSecu HYP2003"],			
+                ["FT ePass2003Auto 0", "HyperSecu HYP2003"],				
+				["feitian ePass2003 0", "HyperSecu HYP2003"],             
+                ["FS USB Token 0", "HyperSecu HYP2003"],					
+                ["AKS ifdh 0", "SafeNet eToken"],							
+                ["AKS ifdh 1", "SafeNet eToken"],							
+                ["SafeNet Token JC 0", "SafeNet eToken"],					
+                ["SafeNet Token JC 1", "SafeNet eToken"],					
+                ["Aladdin Token JC 0", "SafeNet eToken"],					
+                ["Aladdin Token JC 1", "SafeNet eToken"],					
+                ["Watchdata WDIND USB CCID Key 0", "PROXKey Watchdata"],	
+                ["Bit4id tokenME FIPS 0", "Bit4id tokenME"],				
+                ["Longmai mToken CryptoIDA 0", "Longmai mToken"]			
+            ]);																
+            let linuxHashMap = new Map([									
+                ["Feitian ePass2003", "HyperSecu HYP2003"],				
+                ["FT ePass2003Auto", "HyperSecu HYP2003"],				
+                ["SafeNet eToken 5100", "SafeNet eToken"],					
+                ["Watchdata USB Key", "PROXKey Watchdata"]					
+            ]);																
+            if (this.OSName == "Windows") {										
+                if (winHashMap.has(ReaderName))				
+                    return winHashMap.get(ReaderName);					
+				else														
+					return ReaderName; 	
+            }																
+            if (this.OSName = "Linux") {											
+				if (linuxHashMap.has(ReaderName))							
+					return linuxHashMap.get(ReaderName);					
+				else														
+					return ReaderName; 							
+			}																
+			else {															
+                return ReaderName;									
+            }																
+        }																	
+		function GetOS()													
+		{																	
+            if (navigator.appVersion.indexOf("Win") != -1) return "Windows";
+            else if (navigator.appVersion.indexOf("Mac") != -1) return "MacOS";	
+            else if (navigator.appVersion.indexOf("Linux") != -1) return "Linux";
+            else if (navigator.appVersion.indexOf("X11") != -1) return "UNIX";	
+			else return "Unknown OS";										
+			//userAgentData not yet availabl ein firefox 27Mar23 - return navigator.userAgentData.platform;						
+		}																	
+}//End of TpCrypto class										
+</script><head>
+<meta http-equiv="content-type" content="text/html; charset=UTF-8"><link rel="icon" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:16,h:16,m" sizes="16x16"><link rel="icon" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:24,h:24,m" sizes="24x24"><link rel="icon" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:32,h:32,m" sizes="32x32"><link rel="icon" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:48,h:48,m" sizes="48x48"><link rel="icon" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:64,h:64,m" sizes="64x64"><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Ekatva - One Heart. Many Stories</title><meta name="author" content="Ekatva - One Heart. Many Stories"><meta name="generator" content="Starfield Technologies; Go Daddy Website Builder 8.0.0000"><link rel="manifest" href="https://ekatva.co.in/manifest.webmanifest"><link rel="apple-touch-icon" sizes="57x57" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:57,h:57,m"><link rel="apple-touch-icon" sizes="60x60" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:60,h:60,m"><link rel="apple-touch-icon" sizes="72x72" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:72,h:72,m"><link rel="apple-touch-icon" sizes="114x114" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:114,h:114,m"><link rel="apple-touch-icon" sizes="120x120" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:120,h:120,m"><link rel="apple-touch-icon" sizes="144x144" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:144,h:144,m"><link rel="apple-touch-icon" sizes="152x152" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:152,h:152,m"><link rel="apple-touch-icon" sizes="180x180" href="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/favicon/6d1ca570-6228-42c0-98f8-bd98306ca5d7.jpg/:/rs=w:180,h:180,m"><meta property="og:url" content="https://ekatva.co.in/">
+<meta property="og:site_name" content="Ekatva - One Heart. Many Stories">
+<meta property="og:title" content="Ekatva - One Heart. Many Stories">
+<meta property="og:description" content="Building a Brighter Future Together. Join us in our mission to create lasting social change in Ekatva.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/Ekatva_Logos.jpg">
+<meta property="og:locale" content="en_IN">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Ekatva - One Heart. Many Stories">
+<meta name="twitter:description" content="Building a Brighter Future Together. Join us in our mission to create lasting social change in Ekatva.">
+<meta name="twitter:image" content="https://img1.wsimg.com/isteam/ip/11f8f5b8-050c-4798-9e58-f85c1f06d549/Ekatva_Logos.jpg">
+<meta name="twitter:image:alt" content="Ekatva - One Heart. Many Stories">
+<meta name="theme-color" content="#f0ae0f"><style data-inline-fonts="">/* latin-ext */
+@font-face {
+  font-family: 'Sacramento';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/sacramento/v15/buEzpo6gcdjy0EiZMBUG4CMf_f5Iai0Ycw.woff2) format('woff2');
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Sacramento';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/sacramento/v15/buEzpo6gcdjy0EiZMBUG4C0f_f5Iai0.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Pt_g8zYS_SKggPNyCgSQamb1W0lwk4S4WjMDr4fIB1fyc6dYA.woff2) format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Raleway';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Pt_g8zYS_SKggPNyCgSQamb1W0lwk4S4WjMDrcfIB1fyc6dYA.woff2) format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Raleway';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Pt_g8zYS_SKggPNyCgSQamb1W0lwk4S4WjMDrwfIB1fyc6dYA.woff2) format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Pt_g8zYS_SKggPNyCgSQamb1W0lwk4S4WjMDr0fIB1fyc6dYA.woff2) format('woff2');
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Raleway';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Pt_g8zYS_SKggPNyCgSQamb1W0lwk4S4WjMDrMfIB1fyc4.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCAIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCkIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCIIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCMIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 300;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyC0IT4ttDfA.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCAIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCkIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCIIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCMIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyC0IT4ttDfA.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCAIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCkIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCIIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCMIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyC0IT4ttDfA.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* cyrillic-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCAIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0460-052F, U+1C80-1C88, U+20B4, U+2DE0-2DFF, U+A640-A69F, U+FE2E-FE2F;
+}
+/* cyrillic */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCkIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+/* vietnamese */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCIIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0102-0103, U+0110-0111, U+0128-0129, U+0168-0169, U+01A0-01A1, U+01AF-01B0, U+0300-0301, U+0303-0304, U+0308-0309, U+0323, U+0329, U+1EA0-1EF9, U+20AB;
+}
+/* latin-ext */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyCMIT4ttDfCmxA.woff2) format('woff2');
+  unicode-range: U+0100-02AF, U+0304, U+0308, U+0329, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+/* latin */
+@font-face {
+  font-family: 'Raleway';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(https://img1.wsimg.com/gfonts/s/raleway/v29/1Ptug8zYS_SKggPNyC0IT4ttDfA.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+</style><style>.x{-ms-text-size-adjust:100%;-webkit-text-size-adjust:100%;-webkit-tap-highlight-color:rgba(0,0,0,0);margin:0;box-sizing:border-box}.x *,.x :after,.x :before{box-sizing:inherit}.x-el a[href^="mailto:"]:not(.x-el),.x-el a[href^="tel:"]:not(.x-el){color:inherit;font-size:inherit;text-decoration:inherit}.x-el-article,.x-el-aside,.x-el-details,.x-el-figcaption,.x-el-figure,.x-el-footer,.x-el-header,.x-el-hgroup,.x-el-main,.x-el-menu,.x-el-nav,.x-el-section,.x-el-summary{display:block}.x-el-audio,.x-el-canvas,.x-el-progress,.x-el-video{display:inline-block;vertical-align:baseline}.x-el-audio:not([controls]){display:none;height:0}.x-el-template{display:none}.x-el-a{background-color:transparent;color:inherit}.x-el-a:active,.x-el-a:hover{outline:0}.x-el-abbr[title]{border-bottom:1px dotted}.x-el-b,.x-el-strong{font-weight:700}.x-el-dfn{font-style:italic}.x-el-mark{background:#ff0;color:#000}.x-el-small{font-size:80%}.x-el-sub,.x-el-sup{font-size:75%;line-height:0;position:relative;vertical-align:baseline}.x-el-sup{top:-.5em}.x-el-sub{bottom:-.25em}.x-el-img{vertical-align:middle;border:0}.x-el-svg:not(:root){overflow:hidden}.x-el-figure{margin:0}.x-el-hr{box-sizing:content-box;height:0}.x-el-pre{overflow:auto}.x-el-code,.x-el-kbd,.x-el-pre,.x-el-samp{font-family:monospace,monospace;font-size:1em}.x-el-button,.x-el-input,.x-el-optgroup,.x-el-select,.x-el-textarea{color:inherit;font:inherit;margin:0}.x-el-button{overflow:visible}.x-el-button,.x-el-select{text-transform:none}.x-el-button,.x-el-input[type=button],.x-el-input[type=reset],.x-el-input[type=submit]{-webkit-appearance:button;cursor:pointer}.x-el-button[disabled],.x-el-input[disabled]{cursor:default}.x-el-button::-moz-focus-inner,.x-el-input::-moz-focus-inner{border:0;padding:0}.x-el-input{line-height:normal}.x-el-input[type=checkbox],.x-el-input[type=radio]{box-sizing:border-box;padding:0}.x-el-input[type=number]::-webkit-inner-spin-button,.x-el-input[type=number]::-webkit-outer-spin-button{height:auto}.x-el-input[type=search]{-webkit-appearance:textfield;box-sizing:content-box}.x-el-input[type=search]::-webkit-search-cancel-button,.x-el-input[type=search]::-webkit-search-decoration{-webkit-appearance:none}.x-el-textarea{border:0}.x-el-fieldset{border:1px solid silver;margin:0 2px;padding:.35em .625em .75em}.x-el-legend{border:0;padding:0}.x-el-textarea{overflow:auto}.x-el-optgroup{font-weight:700}.x-el-table{border-collapse:collapse;border-spacing:0}.x-el-td,.x-el-th{padding:0}.x{-webkit-font-smoothing:antialiased}.x-el-hr{border:0}.x-el-fieldset,.x-el-input,.x-el-select,.x-el-textarea{margin-top:0;margin-bottom:0}.x-el-fieldset,.x-el-input[type=email],.x-el-input[type=text],.x-el-textarea{width:100%}.x-el-label{vertical-align:middle}.x-el-input{border-style:none;padding:.5em;vertical-align:middle}.x-el-select:not([multiple]){vertical-align:middle}.x-el-textarea{line-height:1.75;padding:.5em}.x-el.d-none{display:none!important}.sideline-footer{margin-top:auto}.disable-scroll{touch-action:none;overflow:hidden;position:fixed;max-width:100vw}@-webkit-keyframes loaderscale{0%{transform:scale(1);opacity:1}45%{transform:scale(.1);opacity:.7}80%{transform:scale(1);opacity:1}}@keyframes loaderscale{0%{transform:scale(1);opacity:1}45%{transform:scale(.1);opacity:.7}80%{transform:scale(1);opacity:1}}.x-loader svg{display:inline-block}.x-loader svg:first-child{-webkit-animation:loaderscale .75s cubic-bezier(.2,.68,.18,1.08) -.24s infinite;animation:loaderscale .75s cubic-bezier(.2,.68,.18,1.08) -.24s infinite}.x-loader svg:nth-child(2){-webkit-animation:loaderscale .75s cubic-bezier(.2,.68,.18,1.08) -.12s infinite;animation:loaderscale .75s cubic-bezier(.2,.68,.18,1.08) -.12s infinite}.x-loader svg:nth-child(3){-webkit-animation:loaderscale .75s cubic-bezier(.2,.68,.18,1.08) 0s infinite;animation:loaderscale .75s cubic-bezier(.2,.68,.18,1.08) 0s infinite}.x-icon>svg{transition:transform .33s ease-in-out}.x-icon>svg.rotate-90{transform:rotate(-90deg)}.x-icon>svg.rotate90{transform:rotate(90deg)}.x-icon>svg.rotate-180{transform:rotate(-180deg)}.x-icon>svg.rotate180{transform:rotate(180deg)}.x-rt ol,.x-rt ul{text-align:left}.x-rt p{margin:0}.mte-inline-block{display:inline-block}@media only screen and (min-device-width:1025px){:root select,_::-webkit-full-page-media,_:future{font-family:sans-serif!important}}
+
+</style>
+<style>/*
+Copyright (c) 2012 by Brian J. Bonislawsky DBA Astigmatic (AOETI) (astigma@astigmatic.com), with Reserved Font Name "Sacramento"
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at: http://scripts.sil.org/OFL
+
+—————————————————————————————-
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+—————————————————————————————-
+*/
+
+/*
+Copyright (c) 2010 - 2013, Matt McInerney (matt@pixelspread.com), Pablo Impallari (impallari@gmail.com), Rodrigo Fuenzalida (hello@rfuenzalida.com) with Reserved Font Name "Raleway"
+
+This Font Software is licensed under the SIL Open Font License, Version 1.1.
+This license is copied below, and is also available with a FAQ at: http://scripts.sil.org/OFL
+
+—————————————————————————————-
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+—————————————————————————————-
+*/
+</style>
+<style data-glamor="cxs-default-sheet">.x .c1-1{letter-spacing:normal}.x .c1-2{text-transform:none}.x .c1-3{background-color:rgb(255, 255, 255)}.x .c1-4{width:100%}.x .c1-5 > div{position:relative}.x .c1-6 > div{overflow:hidden}.x .c1-7 > div{margin-top:auto}.x .c1-8 > div{margin-right:auto}.x .c1-9 > div{margin-bottom:auto}.x .c1-a > div{margin-left:auto}.x .c1-b{font-family:'Raleway', arial, sans-serif}.x .c1-c{font-size:16px}.x .c1-h{padding-top:40px}.x .c1-i{padding-bottom:40px}.x .c1-j{padding:0px !important}.x .c1-k:before{content:""}.x .c1-l:before{display:table}.x .c1-m:before{clear:both}.x .c1-n:after{content:""}.x .c1-o:after{display:table}.x .c1-p:after{clear:both}.x .c1-s{position:relative}.x .c1-t{background-color:rgb(240, 174, 15)}.x .c1-u{display:block}.x .c1-v{margin-top:32px}.x .c1-w{margin-right:32px}.x .c1-x{margin-bottom:32px}.x .c1-y{margin-left:32px}.x .c1-z{margin-left:auto}.x .c1-10{margin-right:auto}.x .c1-11{padding-left:24px}.x .c1-12{padding-right:24px}.x .c1-13{max-width:100%}.x .c1-18{display:flex}.x .c1-19{box-sizing:border-box}.x .c1-1a{flex-direction:row}.x .c1-1b{flex-wrap:wrap}.x .c1-1c{margin-top:0}.x .c1-1d{margin-right:-12px}.x .c1-1e{margin-bottom:0}.x .c1-1f{margin-left:-12px}.x .c1-1k{flex-grow:1}.x .c1-1l{flex-shrink:1}.x .c1-1m{flex-basis:0%}.x .c1-1n{padding-top:0}.x .c1-1o{padding-right:12px}.x .c1-1p{padding-bottom:0}.x .c1-1q{padding-left:12px}.x .c1-1r{overflow-wrap:break-word}.x .c1-1s{word-wrap:break-word}.x .c1-20{text-align:center}.x .c1-21{display:inline-block}.x .c1-22{font-family:'Sacramento', serif, system-ui}.x .c1-23{font-size:18px}.x .c1-2c{letter-spacing:inherit}.x .c1-2d{text-transform:inherit}.x .c1-2e{text-decoration:none}.x .c1-2f{display:inline}.x .c1-2g{cursor:pointer}.x .c1-2h{border-top:0px}.x .c1-2i{border-right:0px}.x .c1-2j{border-bottom:0px}.x .c1-2k{border-left:0px}.x .c1-2l{color:rgb(156, 110, 0)}.x .c1-2m{font-weight:inherit}.x .c1-2n:hover{color:rgb(94, 66, 2)}.x .c1-2o:active{color:rgb(65, 45, 1)}.x .c1-2p{line-height:1.2}.x .c1-2q{margin-left:0}.x .c1-2r{margin-right:0}.x .c1-2s{color:rgb(27, 27, 27)}.x .c1-2t{font-size:36px}.x .c1-2u{font-weight:400}.x .c1-2z{word-wrap:normal !important}.x .c1-30{overflow-wrap:normal !important}.x .c1-31{display:none}.x .c1-32{visibility:hidden}.x .c1-33{position:absolute}.x .c1-34{width:auto}.x .c1-35{overflow:visible}.x .c1-36{left:0px}.x .c1-37{font-size:32px}.x .c1-3c{font-size:25px}.x .c1-3h{height:auto}.x .c1-3i{margin-bottom:24px}.x .c1-3j{height:100%}.x .c1-3k{border-width:0 !important}.x .c1-3l{[object -object]:0px}.x .c1-3m{vertical-align:middle}.x .c1-3n{aspect-ratio:1.5802469135802468 / 1}.x .c1-3o{border-color:rgb(240, 174, 15)}.x .c1-3p{border-style:solid}.x .c1-3q{border-top-width:8px}.x .c1-3r{border-right-width:8px}.x .c1-3s{border-bottom-width:8px}.x .c1-3t{border-left-width:8px}.x .c1-3u{max-height:500px}.x .c1-3v{border-radius:0px}.x .c1-3x{line-height:1.25}.x .c1-3y{margin-bottom:16px}.x .c1-3z > p{margin-top:0}.x .c1-40 > p{margin-right:0}.x .c1-41 > p{margin-bottom:0}.x .c1-42 > p{margin-left:0}.x .c1-44{font-size:inherit !important}.x .c1-45{color:inherit}.x .c1-46{font-weight:600}.x .c1-47{line-height:inherit}.x .c1-48{font-style:italic}.x .c1-49{text-decoration:line-through}.x .c1-4a{text-decoration:underline}.x .c1-4b{line-height:1.4}.x .c1-4c{margin-bottom:40px}.x .c1-4d{overflow:hidden}.x .c1-4g{letter-spacing:unset}.x .c1-4h{text-transform:unset}.x .c1-4i{max-width:80%}.x .c1-4j:before{right:100%}.x .c1-4k:before{margin-right:24px}.x .c1-4l:before{height:1px}.x .c1-4m:before{margin-top:-1px}.x .c1-4n:before{background:currentColor}.x .c1-4o:before{position:absolute}.x .c1-4p:before{top:.75em}.x .c1-4q:before{width:100vw}.x .c1-4r:before{display:block}.x .c1-4s:after{left:100%}.x .c1-4t:after{margin-left:24px}.x .c1-4u:after{height:1px}.x .c1-4v:after{margin-top:-1px}.x .c1-4w:after{background:currentColor}.x .c1-4x:after{position:absolute}.x .c1-4y:after{top:.75em}.x .c1-4z:after{width:100vw}.x .c1-50:after{display:block}.x .c1-51{margin-bottom:-24px}.x .c1-53{flex-basis:100%}.x .c1-54{padding-bottom:48px}.x .c1-56{justify-content:flex-start}.x .c1-57{align-self:flex-start}.x .c1-58{justify-content:center}.x .c1-5c{aspect-ratio:1.33 / 1}.x .c1-5d{order:-1}.x .c1-5e{z-index:1}.x .c1-5g{align-items:center}.x .c1-5h{flex-direction:column}.x .c1-5i > *{max-width:100%}.x .c1-5j{align-items:flex-start}.x .c1-5k{text-align:left}.x .c1-5l > :nth-child(n){margin-bottom:24px}.x .c1-5m  > :last-child{margin-bottom:0 !important}.x .c1-5p{letter-spacing:0.107em}.x .c1-5q{text-transform:uppercase}.x .c1-5r{line-height:1.5}.x .c1-5s > p > ol{text-align:left}.x .c1-5t > p > ol{display:block}.x .c1-5u > p > ol{padding-left:1.3em}.x .c1-5v > p > ol{margin-left:16px}.x .c1-5w > p > ol{margin-right:16px}.x .c1-5x > p > ol{margin-top:auto}.x .c1-5y > p > ol{margin-bottom:auto}.x .c1-5z > p > ul{text-align:left}.x .c1-60 > p > ul{display:block}.x .c1-61 > p > ul{padding-left:1.3em}.x .c1-62 > p > ul{margin-left:16px}.x .c1-63 > p > ul{margin-right:16px}.x .c1-64 > p > ul{margin-top:auto}.x .c1-65 > p > ul{margin-bottom:auto}.x .c1-66 > ul{text-align:left}.x .c1-67 > ul{display:block}.x .c1-68 > ul{padding-left:1.3em}.x .c1-69 > ul{margin-left:16px}.x .c1-6a > ul{margin-right:16px}.x .c1-6b > ul{margin-top:auto}.x .c1-6c > ul{margin-bottom:auto}.x .c1-6d > ol{text-align:left}.x .c1-6e > ol{display:block}.x .c1-6f > ol{padding-left:1.3em}.x .c1-6g > ol{margin-left:16px}.x .c1-6h > ol{margin-right:16px}.x .c1-6i > ol{margin-top:auto}.x .c1-6j > ol{margin-bottom:auto}.x .c1-6k{color:rgb(94, 94, 94)}.x .c1-6l{flex-direction:row-reverse}.x .c1-6m{min-height:none}.x .c1-6n{margin-left:-4px}.x .c1-6o{margin-right:-4px}.x .c1-6p{width:calc(100% - 0.5px) !important}.x .c1-6q{width:50%}.x .c1-6r{padding-top:4px}.x .c1-6s{padding-right:4px}.x .c1-6t{padding-bottom:4px}.x .c1-6u{padding-left:4px}.x .c1-6w{opacity:0}.x .c1-6x{transition:opacity 1s}.x .c1-6y{aspect-ratio:1.5 / 1}.x .c1-6z{aspect-ratio:1.4625 / 1}.x .c1-70{aspect-ratio:1.3363431151241536 / 1}.x .c1-71{aspect-ratio:1 / 1}.x .c1-72{border-bottom-width:1px}.x .c1-77{color:rgb(255, 255, 255)}.x .c1-78{font-weight:700}.x .c1-79{font-family:Helvetica Neue, Helvetica, Arial, sans-serif}.x .c1-7a{background-color:rgb(69, 90, 100)}.x .c1-7b{display:inline-flex}.x .c1-7c{max-width:88%}.x .c1-7d > span{color:rgb(255, 255, 255)}.x .c1-7e{border-top-width:0px}.x .c1-7f{border-right-width:0px}.x .c1-7g{border-bottom-width:0px}.x .c1-7h{border-left-width:0px}.x .c1-7i{border-style:none}.x .c1-7j{padding-left:40px}.x .c1-7k{padding-right:40px}.x .c1-7l{padding-top:8px}.x .c1-7m{padding-bottom:8px}.x .c1-7n{min-height:56px}.x .c1-7o{border-radius:48px}.x .c1-7p:hover{background-color:rgb(79, 102, 114)}.x .c1-7q:hover:after{display:none}.x .c1-7r:after{display:none}.x .c1-7s:active{background-color:rgb(69, 90, 100)}.x .c1-80{margin-left:-8px}.x .c1-81{width:24px}.x .c1-82{height:24px}.x .c1-83{top:50%}.x .c1-84{right:auto}.x .c1-85{line-height:0}.x .c1-86{transform:translateY(-50%)}.x .c1-87 > img{display:block}.x .c1-88{margin-left:calc(24px + 8px)}.x .c1-89{padding-bottom:32px}.x .c1-8a{padding-top:24px}.x .c1-8b{padding-bottom:24px}.x .c1-8c{border-color:rgb(226, 226, 226)}.x .c1-8d{flex-grow:3}.x .c1-8e{padding-right:0px}.x .c1-8f{padding-left:0px}.x .c1-8i{color:rgb(89, 89, 89)}.x .c1-8j{font-size:14px}.x .c1-8p{margin-top:24px}.x .c1-8s{position:fixed}.x .c1-8t{right:0px}.x .c1-8u{z-index:10000}.x .c1-8v{overflow-y:auto}.x .c1-8w{transition:all 1s ease-in}.x .c1-8x{box-shadow:0 2px 6px 0px rgba(0,0,0,0.3)}.x .c1-8y{contain:content}.x .c1-8z{bottom:-500px}.x .c1-97{color:rgb(0, 0, 0)}.x .c1-98{max-height:300px}.x .c1-99{color:rgb(42, 38, 33)}.x .c1-9b{justify-content:space-between}.x .c1-9c{letter-spacing:1px}.x .c1-9d{transition:all .3s ease}.x .c1-9e{z-index:0}.x .c1-9f .btnAddon{content:""}.x .c1-9g .btnAddon{background-color:rgb(255, 255, 255)}.x .c1-9h .btnAddon{position:absolute}.x .c1-9i .btnAddon{width:0px}.x .c1-9j .btnAddon{height:120%}.x .c1-9k .btnAddon{bottom:-2px}.x .c1-9l .btnAddon{left:-32px}.x .c1-9m .btnAddon{transform:skewX(15deg)}.x .c1-9n .btnAddon{transition:all .3s ease}.x .c1-9o .btnAddon{z-index:-1}.x .c1-9p{border-top-width:1px}.x .c1-9q{border-right-width:1px}.x .c1-9r{border-left-width:1px}.x .c1-9s{margin-bottom:4px}.x .c1-9t{word-break:break-word}.x .c1-9u{flex-basis:50%}.x .c1-9v{min-height:40px}.x .c1-9w{background-color:transparent}.x .c1-9x{border-color:currentColor}.x .c1-9y{text-shadow:none}.x .c1-9z{font-size:12px}.x .c1-a0:hover{background-color:rgb(0, 0, 0)}.x .c1-a1:hover .btnAddon{width:120%}.x .c1-a2:hover{color:rgb(27, 27, 27)}.x .c1-a3:hover{border-color:rgb(0, 0, 0)}.x .c1-a4:nth-child(2){margin-left:24px}.x .c1-a9{right:24px}.x .c1-aa{bottom:24px}.x .c1-ab{z-index:9999}.x .c1-ac{width:65px}.x .c1-ad{height:65px}.x .c1-af{border-radius:50%}.x .c1-ag{box-shadow:0px 3px 18px rgba(0, 0, 0, 0.25)}.x .c1-ah{transform:translateZ(0)}</style>
+<style data-glamor="cxs-xs-sheet">@media (max-width: 767px){.x .c1-q{padding-top:32px}}@media (max-width: 767px){.x .c1-r{padding-bottom:32px}}@media (max-width: 767px){.x .c1-24{width:100%}}@media (max-width: 767px){.x .c1-25{display:flex}}@media (max-width: 767px){.x .c1-26{justify-content:center}}@media (max-width: 767px){.x .c1-3w{height:calc((100vw - 40px)/1.5802469135802468)}}@media (max-width: 767px){.x .c1-4e{margin-bottom:24px}}@media (max-width: 767px){.x .c1-5f{height:calc((100vw - 40px)/1.33)}}@media (max-width: 767px){.x .c1-5n > :nth-child(n){margin-bottom:16px}}@media (max-width: 767px){.x .c1-5o  > :last-child{margin-bottom:0 !important}}@media (max-width: 767px){.x .c1-7t{padding-left:16px}}@media (max-width: 767px){.x .c1-7u{padding-right:16px}}</style>
+<style data-glamor="cxs-sm-sheet">@media (min-width: 768px){.x .c1-d{font-size:16px}}@media (min-width: 768px){.x .c1-14{width:100%}}@media (min-width: 768px){.x .c1-1g{margin-top:0}}@media (min-width: 768px){.x .c1-1h{margin-right:-24px}}@media (min-width: 768px){.x .c1-1i{margin-bottom:0}}@media (min-width: 768px){.x .c1-1j{margin-left:-24px}}@media (min-width: 768px){.x .c1-1t{padding-top:0}}@media (min-width: 768px){.x .c1-1u{padding-right:24px}}@media (min-width: 768px){.x .c1-1v{padding-bottom:0}}@media (min-width: 768px){.x .c1-1w{padding-left:24px}}@media (min-width: 768px) and (max-width: 1023px){.x .c1-27{width:100%}}@media (min-width: 768px){.x .c1-28{font-size:18px}}@media (min-width: 768px){.x .c1-2v{font-size:43px}}@media (min-width: 768px){.x .c1-38{font-size:34px}}@media (min-width: 768px){.x .c1-3d{font-size:25px}}@media (min-width: 768px){.x .c1-52{margin-bottom:-48px}}@media (min-width: 768px){.x .c1-55{padding-bottom:48px}}@media (min-width: 768px){.x .c1-59{flex-basis:50%}}@media (min-width: 768px){.x .c1-5a{max-width:50%}}@media (min-width: 768px){.x .c1-73{margin-left:8.333333333333332%}}@media (min-width: 768px){.x .c1-74{flex-basis:83.33333333333334%}}@media (min-width: 768px){.x .c1-75{max-width:83.33333333333334%}}@media (min-width: 768px){.x .c1-76{text-align:center}}@media (min-width: 768px){.x .c1-7v{width:auto}}@media (min-width: 768px){.x .c1-8k{font-size:14px}}@media (min-width: 768px){.x .c1-90{width:400px}}@media (min-width: 768px){.x .c1-91{max-height:500px}}@media (min-width: 768px){.x .c1-92{border-radius:7px}}@media (min-width: 768px){.x .c1-93{margin-top:24px}}@media (min-width: 768px){.x .c1-94{margin-right:24px}}@media (min-width: 768px){.x .c1-95{margin-bottom:24px}}@media (min-width: 768px){.x .c1-96{margin-left:24px}}@media (min-width: 768px){.x .c1-9a{max-height:200px}}@media (min-width: 768px){.x .c1-a5{font-size:12px}}</style>
+<style data-glamor="cxs-md-sheet">@media (min-width: 1024px){.x .c1-e{font-size:16px}}@media (min-width: 1024px){.x .c1-15{width:984px}}@media (min-width: 1024px){.x .c1-1x{margin-left:16.666666666666664%}}@media (min-width: 1024px){.x .c1-1y{flex-basis:66.66666666666666%}}@media (min-width: 1024px){.x .c1-1z{max-width:66.66666666666666%}}@media (min-width: 1024px){.x .c1-29{font-size:18px}}@media (min-width: 1024px){.x .c1-2w{font-size:43px}}@media (min-width: 1024px){.x .c1-39{font-size:34px}}@media (min-width: 1024px){.x .c1-3e{font-size:25px}}@media (min-width: 1024px){.x .c1-43{margin-top:none}}@media (min-width: 1024px){.x .c1-4f{text-align:center}}@media (min-width: 1024px){.x .c1-5b{margin-bottom:0}}@media (min-width: 1024px){.x .c1-6v{width:33.3333%}}@media (min-width: 1024px){.x .c1-7w{background-color:rgb(69, 90, 100)}}@media (min-width: 1024px){.x .c1-7x{color:rgb(255, 255, 255)}}@media (min-width: 1024px){.x .c1-7y:hover{background-color:rgb(79, 102, 114)}}@media (min-width: 1024px){.x .c1-7z:active{background-color:rgb(69, 90, 100)}}@media (min-width: 1024px){.x .c1-8g{flex-basis:0%}}@media (min-width: 1024px){.x .c1-8h{max-width:none}}@media (min-width: 1024px){.x .c1-8l{text-align:left}}@media (min-width: 1024px){.x .c1-8m{font-size:14px}}@media (min-width: 1024px){.x .c1-8q{text-align:right}}@media (min-width: 1024px){.x .c1-8r{margin-top:0}}@media (min-width: 1024px){.x .c1-a6{font-size:12px}}@media (min-width: 1024px){.x .c1-ae{z-index:9999}}</style>
+<style data-glamor="cxs-lg-sheet">@media (min-width: 1280px){.x .c1-f{font-size:16px}}@media (min-width: 1280px){.x .c1-16{width:1160px}}@media (min-width: 1280px){.x .c1-2a{font-size:18px}}@media (min-width: 1280px){.x .c1-2x{font-size:50px}}@media (min-width: 1280px){.x .c1-3a{font-size:36px}}@media (min-width: 1280px){.x .c1-3f{font-size:25px}}@media (min-width: 1280px){.x .c1-8n{font-size:14px}}@media (min-width: 1280px){.x .c1-a7{font-size:12px}}</style>
+<style data-glamor="cxs-xl-sheet">@media (min-width: 1536px){.x .c1-g{font-size:18px}}@media (min-width: 1536px){.x .c1-17{width:1280px}}@media (min-width: 1536px){.x .c1-2b{font-size:20px}}@media (min-width: 1536px){.x .c1-2y{font-size:54px}}@media (min-width: 1536px){.x .c1-3b{font-size:41px}}@media (min-width: 1536px){.x .c1-3g{font-size:27px}}@media (min-width: 1536px){.x .c1-8o{font-size:16px}}@media (min-width: 1536px){.x .c1-a8{font-size:14px}}</style>
+<style>@keyframes opacity-bounce { 
+      0% {opacity: 0;transform: translateY(100%); } 
+      60% { transform: translateY(-20%); } 
+      100% { opacity: 1; transform: translateY(0); }
+    }</style>
+<style>.gd-ad-flex-parent {
+          animation-name: opacity-bounce; 
+          animation-duration: 800ms; 
+          animation-delay: 400ms; 
+          animation-fill-mode: forwards; 
+          animation-timing-function: ease; 
+          opacity: 0;</style>
+<style>.grecaptcha-badge { visibility: hidden; }</style>
+<style>.page-inner { background-color: rgb(255, 255, 255); min-height: 100vh; }</style>
+<script>"use strict";
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function () {
+    navigator.serviceWorker.register('/sw.js');
+  });
+}</script><script>
+    "undefined"=== typeof _trfq && (window._trfq = []);
+    _trfq.push(['cmdLogEvent', 'impression', 'pandc.vnext.upgrades.freemium_ad', [['source-website', '11f8f5b8-050c-4798-9e58-f85c1f06d549']]]);
+    document.querySelector('a.gd-ad-body').addEventListener('click', function() {
+      _trfq.push(['cmdLogEvent', 'click', 'pandc.vnext.upgrades.freemium_ad', [['source-website', '11f8f5b8-050c-4798-9e58-f85c1f06d549']]]);
+    });
+  </script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-layout20-Theme-publish-Theme-e73edcf8.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-Component-de800ada.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-_rollupPluginBabelHelpers-1ddb43ea.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-defaultSocialIconPack-a2c518b6.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-index-4e26cd6b.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-index3-e7c2426b.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-legacyOverrides-42582241.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-loaders-fffeeba5.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-modernThinRound-ced97fbd.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/formIdentifiers-99523055.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/traffic2-0a7e72c6.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/badge-e542c4f1.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/Carousel-3d82957b.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/ColorSwatch-4196a0a9.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-dataAids-6a839d53.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-index2-87bd33e6.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-navigationDrawer-27f5f1f5.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-overlayTypes-e1dbe765.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-searchFormLocations-c86f2a99.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/_commonjsHelpers-67085353.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/_react_commonjs-external-a1351e34.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/_rollupPluginBabelHelpers-8ce54c82.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/interopRequireDefault-c83974f7.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-gallery4-Gallery-345bfda1.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-dataAids-0f4d4b20.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-GalleryImage-cac21684.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-renderLightbox-069ccd76.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-wrapWithDeviceDetection-f9dc1d72.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/Masonry-fbc3de73.js"></script><script crossorigin="Anonymous" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/bs-CustomArrows-49960b5a.js"></script></head>
+<body class="x x-fonts-sacramento"><div id="layout-11-f-8-f-5-b-8-050-c-4798-9-e-58-f-85-c-1-f-06-d-549" class="layout layout-layout layout-layout-layout-20 locale-en-IN lang-en"><div data-ux="Page" id="page-110906" class="x-el x-el-div x-el c1-1 c1-2 c1-3 c1-4 c1-5 c1-6 c1-7 c1-8 c1-9 c1-a c1-b c1-c c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="Block" class="x-el x-el-div page-inner c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div id="285eab17-bf08-474d-a8b7-019b4b8b52ab" class="widget widget-header widget-header-header-9"><div data-ux="Header" role="main" data-aid="HEADER_WIDGET" id="n-110907" class="x-el x-el-div x-el x-el c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g c1-1 c1-2 c1-3 c1-b c1-c c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div> <div id="freemium-ad-110908"><div data-freemium-ad="true" style="overflow: hidden; width: 100%; z-index: 10000; position: fixed; left: 0px;"><div id="GODADDY_FREEMIUM_AD" class="gd-ad-wrapper">
+  <style type="text/css">
+    @font-face {
+      font-family: "GD Sherpa";
+      src: url('//img1.wsimg.com/blobby/go/ux/fonts/sherpa/1.1/gdsherpa-regular.woff2');
+      font-display: swap;
+    }
+
+    @font-face {
+      font-family: "GD Sherpa";
+      font-weight: bold;
+      src: url('//img1.wsimg.com/blobby/go/ux/fonts/sherpa/1.1/gdsherpa-bold.woff2');
+      font-display: swap;
+    }
+
+    .gd-ad-wrapper {
+      box-sizing: border-box;
+      background-color: #FFF;
+      font-family: GD Sherpa, Helvetica, Arial, sans_serif;
+      width: 100%;
+      z-index: 10000;
+    }
+
+    .gd-ad-body {
+      align-items: center;
+      border-bottom: 5px solid #00A4A6;
+      color: #000;
+      cursor: pointer;
+      display: flex;
+      font-size: 14px;
+      min-height: 50px;
+      justify-content: center;
+      text-decoration: none;
+      padding: 2px;
+    }
+
+    .gd-ad-body:hover {
+      color: #000;
+      text-decoration: none;
+    }
+
+    .gd-ad-logo {
+      margin-right: 8px;
+    }
+
+    .gd-ad-text-bold {
+      font-weight: bold;
+    }
+
+    .gd-ad-psuedo-link {
+      color: #09757A;
+      text-decoration: underline;
+    }
+
+    .gd-ad-flex-parent {
+      align-items: center;
+      display: flex;
+    }
+
+    .gd-ad-flex-child {
+      align-items: center;
+      display: flex;
+      flex-shrink: 0;
+    }
+
+    .gd-ad-body-mobile {
+      font-size: 12px !important;
+    }
+
+    .gd-ad-body-desktop {
+      font-size: 14px !important;
+    }
+
+    .gd-ad-mobile {
+      display: none;
+    }
+
+    .gd-ad-button {
+      background-color: #FFF;
+      border: 1px solid #8995A9;
+      border-radius: 4px;
+      cursor: pointer;
+      margin-left: 10px;
+      padding: 8px 24px;
+    }
+
+    @media screen and (max-width: 768px) {
+      .gd-ad-body {
+        font-size: 12px;
+        min-height: 40px;
+      }
+
+      .gd-ad-desktop {
+        display: none;
+      }
+
+      .gd-ad-mobile {
+        display: inline-block;
+      }
+    }
+  </style>
+  <a class="gd-ad-body
+" href="https://www.godaddy.com/websites/website-builder?isc=pwugc&amp;utm_source=wsb&amp;utm_medium=applications&amp;utm_campaign=en-us_corp_applications_banner&amp;utm_content=11f8f5b8-050c-4798-9e58-f85c1f06d549" target="_blank" rel="noopener nofollow">
+    <div class="gd-ad-flex-parent">
+      <div class="gd-ad-flex-child">
+        <svg class="gd-ad-logo" width="20" height="18" viewBox="0 0 90 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M77.6274 3.65995C68.2748 -2.17733 55.9623 -0.791312 44.9962 6.10453C34.0339 -0.787504 21.7214 -2.17353 12.3726 3.65995C-2.40398 12.8747 -4.20051 36.6199 8.36376 56.6906C17.6287 71.4875 32.1077 80.1578 45 79.9978C57.8923 80.1578 72.3751 71.4913 81.6362 56.6906C94.2005 36.6199 92.404 12.8747 77.6274 3.65995ZM15.1532 52.4525C12.5099 48.2297 10.5608 43.7708 9.35547 39.1977C8.22263 34.8912 7.79924 30.6874 8.10057 26.7045C8.66127 19.2908 11.686 13.5144 16.6141 10.4378C21.5459 7.36109 28.0722 7.18213 34.9913 9.92752C36.0326 10.3426 37.0625 10.8223 38.0847 11.3516C34.3963 14.6872 31.0054 18.7006 28.1218 23.3042C20.4856 35.5004 18.1665 49.0484 20.825 59.8738C18.7424 57.6349 16.8429 55.1484 15.1532 52.4525ZM80.6407 39.1977C79.4354 43.7708 77.4863 48.2297 74.843 52.4525C73.1533 55.1484 71.2537 57.6311 69.1673 59.8777C71.5474 50.1869 69.9378 38.3143 64.0943 27.1843C63.6824 26.3999 62.7326 26.1409 61.985 26.6093L43.7909 37.9602C43.0929 38.3943 42.8831 39.312 43.3179 40.005L45.9841 44.2659C46.4189 44.9627 47.3382 45.1721 48.0324 44.738L59.8261 37.3814C60.2228 38.5123 60.5737 39.6509 60.8789 40.797C62.0117 45.1036 62.4351 49.3073 62.1338 53.2902C61.5731 60.7039 58.5484 66.4803 53.6203 69.557C51.1563 71.0915 48.2955 71.9064 45.1869 71.9939C45.1221 71.9939 45.0534 71.9939 44.9886 71.9939C44.9275 71.9939 44.8665 71.9939 44.8093 71.9939C41.7006 71.9064 38.8399 71.0915 36.3759 69.557C31.444 66.4803 28.4231 60.7039 27.8624 53.2902C27.5611 49.3073 27.9845 45.1036 29.1173 40.797C30.3226 36.2239 32.2717 31.765 34.915 27.5422C37.5583 23.3194 40.7166 19.6144 44.3058 16.5302C47.6853 13.6248 51.286 11.4011 55.0049 9.92752C61.9278 7.17832 68.4541 7.36109 73.3821 10.4378C78.314 13.5144 81.3349 19.2908 81.8956 26.7045C82.2008 30.6874 81.7774 34.8912 80.6407 39.1977Z" fill="#00A4A6"></path>
+        </svg>
+        <span>Powered by</span>
+        <span>&nbsp;</span>
+        <span class="gd-ad-text-bold gd-ad-desktop">GoDaddy Websites + Marketing.</span>
+        <span class="gd-ad-text-bold gd-ad-mobile">GoDaddy</span>
+        <span class="gd-ad-desktop">&nbsp;Create your free website now.</span>
+        <span class="gd-ad-mobile">&nbsp; | &nbsp;</span>
+      </div>
+      <button class="gd-ad-button gd-ad-desktop">Start for Free</button>
+      <span class="gd-ad-text-bold gd-ad-psuedo-link gd-ad-mobile">Create your free site</span>
+    </div>
+  </a>
+  
+</div>
+</div><div style="width: 100%; min-height: 50px;"></div></div><section data-ux="Section" data-aid="HEADER_SECTION" class="x-el x-el-section c1-1 c1-2 c1-3 c1-h c1-i c1-j c1-b c1-c c1-k c1-l c1-m c1-n c1-o c1-p c1-q c1-r c1-d c1-e c1-f c1-g"><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-s c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-t c1-b c1-c c1-d c1-e c1-f c1-g"></div><div data-ux="Group" class="x-el x-el-div c1-1 c1-2 c1-u c1-v c1-w c1-x c1-y c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="Container" class="x-el x-el-div c1-1 c1-2 c1-z c1-10 c1-11 c1-12 c1-13 c1-b c1-c c1-14 c1-d c1-15 c1-e c1-16 c1-f c1-17 c1-g"><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-1a c1-1b c1-1c c1-1d c1-1e c1-1f c1-b c1-c c1-1g c1-1h c1-1i c1-1j c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-1m c1-13 c1-1n c1-1o c1-1p c1-1q c1-1r c1-1s c1-b c1-c c1-1t c1-1u c1-1v c1-1w c1-d c1-1x c1-1y c1-1z c1-e c1-f c1-g"><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-20 c1-13 c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="Block" data-aid="HEADER_LOGO_RENDERED" class="x-el x-el-div c1-21 c1-22 c1-13 c1-20 c1-1c c1-10 c1-1e c1-z c1-23 c1-24 c1-25 c1-26 c1-27 c1-28 c1-29 c1-2a c1-2b"><a rel="" role="link" aria-haspopup="menu" data-ux="Link" data-page="9a2f0bc6-138a-4da7-a3fb-8609a5121aa8" title="Ekatva - One Heart. Many Stories" href="https://ekatva.co.in/" data-typography="LinkAlpha" class="x-el x-el-a c1-2c c1-2d c1-2e c1-1s c1-1r c1-2f c1-2g c1-2h c1-2i c1-2j c1-2k c1-13 c1-4 c1-b c1-2l c1-c c1-2m c1-2n c1-2o c1-d c1-e c1-f c1-g" data-tccl="ux2.HEADER.header9.Logo.Default.Link.Default.110909.click,click"><div data-ux="Block" id="logo-container-110910" class="x-el x-el-div c1-1 c1-2 c1-21 c1-4 c1-s c1-b c1-c c1-d c1-e c1-f c1-g" style=""><h3 role="heading" aria-level="3" data-ux="LogoHeading" id="logo-text-110911" data-aid="HEADER_LOGO_TEXT_RENDERED" data-typography="LogoAlpha" class="x-el x-el-h3 c1-1 c1-2 c1-1s c1-1r c1-2p c1-2q c1-2r c1-1c c1-1e c1-13 c1-21 c1-22 c1-2s c1-2t c1-2u c1-2v c1-2w c1-2x c1-2y">Ekatva - One Heart. Many Stories</h3><span role="heading" aria-level="NaN" data-ux="scaler" data-size="xxlarge" data-scaler-id="scaler-logo-container-110910" aria-hidden="true" data-typography="LogoAlpha" class="x-el x-el-span c1-1 c1-2 c1-2z c1-30 c1-2p c1-2q c1-2r c1-1c c1-1e c1-13 c1-31 c1-32 c1-33 c1-34 c1-35 c1-36 c1-2t c1-22 c1-2s c1-2u c1-2v c1-2w c1-2x c1-2y" style="display: none;">Ekatva - One Heart. Many Stories</span><span role="heading" aria-level="NaN" data-ux="scaler" data-size="xlarge" data-scaler-id="scaler-logo-container-110910" aria-hidden="true" data-typography="LogoAlpha" class="x-el x-el-span c1-1 c1-2 c1-2z c1-30 c1-2p c1-2q c1-2r c1-1c c1-1e c1-13 c1-31 c1-32 c1-33 c1-34 c1-35 c1-36 c1-37 c1-22 c1-2s c1-2u c1-38 c1-39 c1-3a c1-3b" style="display: none;">Ekatva - One Heart. Many Stories</span><span role="heading" aria-level="NaN" data-ux="scaler" data-size="large" data-scaler-id="scaler-logo-container-110910" aria-hidden="true" data-typography="LogoAlpha" class="x-el x-el-span c1-1 c1-2 c1-2z c1-30 c1-2p c1-2q c1-2r c1-1c c1-1e c1-13 c1-31 c1-32 c1-33 c1-34 c1-35 c1-36 c1-3c c1-22 c1-2s c1-2u c1-3d c1-3e c1-3f c1-3g" style="display: none;">Ekatva - One Heart. Many Stories</span></div></a></div></div></div></div></div></div><div data-ux="Container" class="x-el x-el-div c1-1 c1-2 c1-z c1-10 c1-11 c1-12 c1-13 c1-b c1-c c1-14 c1-d c1-15 c1-e c1-16 c1-f c1-17 c1-g"><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-20 c1-4 c1-3h c1-3i c1-1c c1-b c1-c c1-d c1-e c1-f c1-g"><figure data-ux="WrapperImage" class="x-el x-el-figure c1-1 c1-2 c1-s c1-21 c1-1c c1-2r c1-1e c1-2q c1-b c1-c c1-d c1-e c1-f c1-g"><picture class="x-el x-el-picture c1-1 c1-2 c1-4 c1-3j c1-20 c1-3k c1-3l c1-b c1-c c1-d c1-e c1-f c1-g"><source media="(max-width: 450px)" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20411,cg%20true.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20822,cg%20true.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201233,cg%20true.webp 3x"><source media="(min-width: 451px)" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20700,cg%20true.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201400,cg%20true.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%202100,cg%20true.webp 3x"><img data-ux="Image" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20700,cg%20true.webp" data-aid="BACKGROUND_IMAGE_RENDERED" class="x-el x-el-img c1-1 c1-2 c1-34 c1-13 c1-z c1-10 c1-1c c1-1e c1-3m c1-3n c1-3o c1-3p c1-3q c1-3r c1-3s c1-3t c1-3u c1-3h c1-3v c1-b c1-c c1-3w c1-d c1-e c1-f c1-g"></picture></figure></div><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-20 c1-1c c1-3i c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-1a c1-1b c1-1c c1-1d c1-1e c1-1f c1-b c1-c c1-1g c1-1h c1-1i c1-1j c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-1m c1-13 c1-1n c1-1o c1-1p c1-1q c1-b c1-c c1-1t c1-1u c1-1v c1-1w c1-d c1-1x c1-1y c1-1z c1-e c1-f c1-g"><div data-ux="Hero" class="x-el x-el-div c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="HeroText" data-aid="HEADER_TAGLINE2_RENDERED" data-typography="BodyAlpha" class="x-el c1-1 c1-2 c1-1s c1-1r c1-3x c1-1c c1-3y c1-3z c1-40 c1-41 c1-42 c1-b c1-2s c1-c c1-2u c1-d c1-43 c1-e c1-f c1-g x-rt"><p style="margin:0"><span>Building a Brighter Future Together. Join us in our mission to create lasting social change in Ekatva.</span></p></div></div></div></div></div></div></div></section>  </div></div></div><div id="ca7d387d-11e2-4f6f-b72d-67466f4e1277" class="widget widget-about widget-about-about-2"><div data-ux="Widget" role="region" id="ca7d387d-11e2-4f6f-b72d-67466f4e1277" class="x-el x-el-div x-el c1-1 c1-2 c1-3 c1-b c1-c c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div> <section data-ux="Section" class="x-el x-el-section c1-1 c1-2 c1-3 c1-h c1-i c1-b c1-c c1-q c1-r c1-d c1-e c1-f c1-g"><div data-ux="Container" class="x-el x-el-div c1-1 c1-2 c1-z c1-10 c1-11 c1-12 c1-13 c1-b c1-c c1-14 c1-d c1-15 c1-e c1-16 c1-f c1-17 c1-g"><h1 role="heading" aria-level="1" data-ux="SectionHeading" data-aid="ABOUT_SECTION_TITLE_RENDERED" data-promoted-from="2" data-order="0" data-typography="HeadingBeta" class="x-el x-el-h1 c1-1 c1-2 c1-1s c1-1r c1-4b c1-2q c1-2r c1-1c c1-4c c1-4d c1-20 c1-22 c1-37 c1-2s c1-2u c1-4e c1-38 c1-4f c1-39 c1-3a c1-3b"><span data-ux="Element" class="x-el x-el-span c1-4g c1-4h c1-21 c1-s c1-45 c1-4i c1-22 c1-37 c1-4j c1-4k c1-k c1-4l c1-4m c1-4n c1-4o c1-4p c1-4q c1-4r c1-4s c1-4t c1-n c1-4u c1-4v c1-4w c1-4x c1-4y c1-4z c1-50 c1-38 c1-39 c1-3a c1-3b">About Ekatva</span></h1><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-1a c1-1b c1-1c c1-1d c1-51 c1-1f c1-b c1-c c1-1g c1-1h c1-52 c1-1j c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-54 c1-1q c1-b c1-c c1-1t c1-1u c1-55 c1-1w c1-d c1-e c1-f c1-g"><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-1a c1-1b c1-1c c1-1d c1-1e c1-1f c1-56 c1-b c1-c c1-1g c1-1h c1-1i c1-1j c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-1p c1-1q c1-57 c1-58 c1-b c1-c c1-59 c1-5a c1-1t c1-1u c1-1v c1-1w c1-d c1-e c1-f c1-g"><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-3i c1-20 c1-b c1-c c1-d c1-5b c1-e c1-f c1-g"><span data-ux="Element" class="x-el x-el-span c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><picture class="x-el x-el-picture c1-1 c1-2 c1-4 c1-3j c1-20 c1-3k c1-3l c1-b c1-c c1-d c1-e c1-f c1-g"><source media="(max-width: 450px)" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520411,h%2520309,cg%2520true_003.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20822,h%20618,cg%20true.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%25201233,h%2520927,cg%2520true_003.webp 3x"><source media="(min-width: 451px)" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20600,h%20451,cg%20true.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%25201200,h%2520902,cg%2520true_003.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201710,h%201286,cg%20true.webp 3x"><img data-ux="Image" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20600,h%20451.webp" data-aid="ABOUT_IMAGE_RENDERED0" overlayalpha="0" class="x-el x-el-img c1-1 c1-2 c1-34 c1-13 c1-z c1-10 c1-1c c1-1e c1-3m c1-5c c1-3o c1-3p c1-3q c1-3r c1-3s c1-3t c1-5d c1-5e c1-3v c1-b c1-c c1-5f c1-d c1-e c1-f c1-g"></picture></span></div></div><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-1p c1-1q c1-18 c1-56 c1-5g c1-b c1-c c1-59 c1-5a c1-1t c1-1u c1-1v c1-1w c1-d c1-e c1-f c1-g"><div data-ux="ContentBasic" index="0" id="f814d677-4970-4eaa-9488-1be51adb8890" class="x-el x-el-div x-el c1-1 c1-2 c1-18 c1-5h c1-4 c1-5i c1-5j c1-5k c1-5l c1-5m c1-b c1-c c1-5n c1-5o c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><h4 role="heading" aria-level="4" data-ux="ContentHeading" data-aid="ABOUT_HEADLINE_RENDERED0" data-typography="HeadingDelta" class="x-el x-el-h4 c1-5p c1-5q c1-1s c1-1r c1-3x c1-2q c1-2r c1-1c c1-1e c1-c c1-b c1-2s c1-2u c1-d c1-e c1-f c1-g">Our Mission</h4><div data-ux="ContentText" alignment="left" data-aid="ABOUT_DESCRIPTION_RENDERED0" data-typography="BodyAlpha" class="x-el c1-1 c1-2 c1-1s c1-1r c1-5r c1-1c c1-1e c1-5s c1-5t c1-5u c1-5v c1-5w c1-5x c1-5y c1-5z c1-60 c1-61 c1-62 c1-63 c1-64 c1-65 c1-66 c1-67 c1-68 c1-69 c1-6a c1-6b c1-6c c1-6d c1-6e c1-6f c1-6g c1-6h c1-6i c1-6j c1-1k c1-b c1-6k c1-c c1-2u c1-d c1-e c1-f c1-g x-rt"><p style="margin:0"><span>At
+ Ekatva - One Hear. Many Stories, our mission is to provide education 
+and resources to support health and wellness in our community.</span></p></div></div></div></div></div><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-54 c1-1q c1-b c1-c c1-1t c1-1u c1-55 c1-1w c1-d c1-e c1-f c1-g"><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-6l c1-1b c1-1c c1-1d c1-1e c1-1f c1-56 c1-b c1-c c1-1g c1-1h c1-1i c1-1j c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-1p c1-1q c1-57 c1-58 c1-b c1-c c1-59 c1-5a c1-1t c1-1u c1-1v c1-1w c1-d c1-e c1-f c1-g"><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-3i c1-20 c1-b c1-c c1-d c1-5b c1-e c1-f c1-g"><span data-ux="Element" class="x-el x-el-span c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><picture class="x-el x-el-picture c1-1 c1-2 c1-4 c1-3j c1-20 c1-3k c1-3l c1-b c1-c c1-d c1-e c1-f c1-g"><source media="(max-width: 450px)" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520411,h%2520309,cg%2520true_002.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520822,h%2520618,cg%2520true_003.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201233,h%20927,cg%20true.webp 3x"><source media="(min-width: 451px)" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520600,h%2520451,cg%2520true_002.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201200,h%20902,cg%20true.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201646,h%201238,cg%20true.webp 3x"><img data-ux="Image" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520600,h%2520451_002.webp" data-aid="ABOUT_IMAGE_RENDERED1" overlayalpha="0" class="x-el x-el-img c1-1 c1-2 c1-34 c1-13 c1-z c1-10 c1-1c c1-1e c1-3m c1-5c c1-3o c1-3p c1-3q c1-3r c1-3s c1-3t c1-5d c1-5e c1-3v c1-b c1-c c1-5f c1-d c1-e c1-f c1-g"></picture></span></div></div><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-1p c1-1q c1-18 c1-56 c1-5g c1-b c1-c c1-59 c1-5a c1-1t c1-1u c1-1v c1-1w c1-d c1-e c1-f c1-g"><div data-ux="ContentBasic" index="1" id="7e79daf9-556f-4233-a049-5681de13f48b" class="x-el x-el-div x-el c1-1 c1-2 c1-18 c1-5h c1-4 c1-5i c1-5j c1-5k c1-5l c1-5m c1-b c1-c c1-5n c1-5o c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><h4 role="heading" aria-level="4" data-ux="ContentHeading" data-aid="ABOUT_HEADLINE_RENDERED1" data-typography="HeadingDelta" class="x-el x-el-h4 c1-5p c1-5q c1-1s c1-1r c1-3x c1-2q c1-2r c1-1c c1-1e c1-c c1-b c1-2s c1-2u c1-d c1-e c1-f c1-g">Our Programmes</h4><div data-ux="ContentText" alignment="left" data-aid="ABOUT_DESCRIPTION_RENDERED1" data-typography="BodyAlpha" class="x-el c1-1 c1-2 c1-1s c1-1r c1-5r c1-1c c1-1e c1-5s c1-5t c1-5u c1-5v c1-5w c1-5x c1-5y c1-5z c1-60 c1-61 c1-62 c1-63 c1-64 c1-65 c1-66 c1-67 c1-68 c1-69 c1-6a c1-6b c1-6c c1-6d c1-6e c1-6f c1-6g c1-6h c1-6i c1-6j c1-1k c1-b c1-6k c1-c c1-2u c1-d c1-e c1-f c1-g x-rt"><p style="margin:0"><span>We
+ offer a variety of programmes and services to support health, including
+ counseling, support groups, and educational workshops.</span></p></div></div></div></div></div><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-54 c1-1q c1-b c1-c c1-1t c1-1u c1-55 c1-1w c1-d c1-e c1-f c1-g"><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-1a c1-1b c1-1c c1-1d c1-1e c1-1f c1-56 c1-b c1-c c1-1g c1-1h c1-1i c1-1j c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-1p c1-1q c1-57 c1-58 c1-b c1-c c1-59 c1-5a c1-1t c1-1u c1-1v c1-1w c1-d c1-e c1-f c1-g"><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-3i c1-20 c1-b c1-c c1-d c1-5b c1-e c1-f c1-g"><span data-ux="Element" class="x-el x-el-span c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><picture class="x-el x-el-picture c1-1 c1-2 c1-4 c1-3j c1-20 c1-3k c1-3l c1-b c1-c c1-d c1-e c1-f c1-g"><source media="(max-width: 450px)" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20411,h%20309,cg%20true.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520822,h%2520618,cg%2520true_002.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%25201233,h%2520927,cg%2520true_002.webp 3x"><source media="(min-width: 451px)" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520600,h%2520451,cg%2520true_003.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%25201200,h%2520902,cg%2520true_002.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201800,h%201353,cg%20true.webp 3x"><img data-ux="Image" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520600,h%2520451_003.webp" data-aid="ABOUT_IMAGE_RENDERED2" overlayalpha="0" class="x-el x-el-img c1-1 c1-2 c1-34 c1-13 c1-z c1-10 c1-1c c1-1e c1-3m c1-5c c1-3o c1-3p c1-3q c1-3r c1-3s c1-3t c1-5d c1-5e c1-3v c1-b c1-c c1-5f c1-d c1-e c1-f c1-g"></picture></span></div></div><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-53 c1-13 c1-1n c1-1o c1-1p c1-1q c1-18 c1-56 c1-5g c1-b c1-c c1-59 c1-5a c1-1t c1-1u c1-1v c1-1w c1-d c1-e c1-f c1-g"><div data-ux="ContentBasic" index="2" id="97a1070a-5378-4353-ba68-0bb3a582967c" class="x-el x-el-div x-el c1-1 c1-2 c1-18 c1-5h c1-4 c1-5i c1-5j c1-5k c1-5l c1-5m c1-b c1-c c1-5n c1-5o c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><h4 role="heading" aria-level="4" data-ux="ContentHeading" data-aid="ABOUT_HEADLINE_RENDERED2" data-typography="HeadingDelta" class="x-el x-el-h4 c1-5p c1-5q c1-1s c1-1r c1-3x c1-2q c1-2r c1-1c c1-1e c1-c c1-b c1-2s c1-2u c1-d c1-e c1-f c1-g">Our Impact</h4><div data-ux="ContentText" alignment="left" data-aid="ABOUT_DESCRIPTION_RENDERED2" data-typography="BodyAlpha" class="x-el c1-1 c1-2 c1-1s c1-1r c1-5r c1-1c c1-1e c1-5s c1-5t c1-5u c1-5v c1-5w c1-5x c1-5y c1-5z c1-60 c1-61 c1-62 c1-63 c1-64 c1-65 c1-66 c1-67 c1-68 c1-69 c1-6a c1-6b c1-6c c1-6d c1-6e c1-6f c1-6g c1-6h c1-6i c1-6j c1-1k c1-b c1-6k c1-c c1-2u c1-d c1-e c1-f c1-g x-rt"><p style="margin:0"><span>Over the past year, we have helped over 1,000 individuals in our community improve their mental health and well-being.</span></p></div></div></div></div></div></div></div></section>  </div></div></div><div id="daa6695d-90d8-4e25-95d6-a3f9ef16e29f" class="widget widget-gallery widget-gallery-gallery-4"><div data-ux="Widget" role="region" id="daa6695d-90d8-4e25-95d6-a3f9ef16e29f" class="x-el x-el-div x-el c1-1 c1-2 c1-3 c1-b c1-c c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div> <section data-ux="Section" class="x-el x-el-section c1-1 c1-2 c1-3 c1-h c1-i c1-6m c1-b c1-c c1-q c1-r c1-d c1-e c1-f c1-g"><div data-ux="Container" class="x-el x-el-div c1-1 c1-2 c1-z c1-10 c1-11 c1-12 c1-13 c1-b c1-c c1-14 c1-d c1-15 c1-e c1-16 c1-f c1-17 c1-g"><h2 role="heading" aria-level="2" data-ux="SectionHeading" data-aid="GALLERY_SECTION_TITLE_RENDERED" data-typography="HeadingBeta" class="x-el x-el-h2 c1-1 c1-2 c1-1s c1-1r c1-4b c1-2q c1-2r c1-1c c1-4c c1-4d c1-20 c1-22 c1-37 c1-2s c1-2u c1-4e c1-38 c1-4f c1-39 c1-3a c1-3b"><span data-ux="Element" class="x-el x-el-span c1-4g c1-4h c1-21 c1-s c1-45 c1-4i c1-22 c1-37 c1-4j c1-4k c1-k c1-4l c1-4m c1-4n c1-4o c1-4p c1-4q c1-4r c1-4s c1-4t c1-n c1-4u c1-4v c1-4w c1-4x c1-4y c1-4z c1-50 c1-38 c1-39 c1-3a c1-3b">Our Story in Pictures: Ekatva's Journey to Make a Difference</span></h2><div data-ux="Element" id="bs-1" class="x-el x-el-div c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><span data-ux="Element" class="x-el x-el-span c2-1 c2-2 c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><div><div data-ux="Block" class="x-el x-el-div c2-1 c2-2 c2-t c2-u c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><div data-ux="Block" id="gallery4-1" class="x-el x-el-div c2-1 c2-2 c2-v c2-w c2-x c2-y c2-z c2-10 c2-3 c2-4 c2-5 c2-6 c2-7 c2-8" style="position: relative; width: 1239px; height: 698px;"><div data-ux="Block" data-aid="GALLERY_IMAGE0_CELL_RENDERED" class="x-el x-el-div c2-1 c2-2 c2-11 c2-r c2-12 c2-13 c2-14 c2-15 c2-3 c2-4 c2-5 c2-16 c2-6 c2-7 c2-8" style="position: absolute; transform: translate3d(0px, 0px, 0px);" data-packed=""><div data-ux="Block" class="x-el x-el-div c2-1 c2-2 c2-j c2-17 c2-k c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><img src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520370,cg%2520true_003.webp" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520370,cg%2520true_003.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520740,cg%2520true_003.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%25201110,cg%2520true_002.webp 3x" data-ux="Image" data-aid="GALLERY_IMAGE0_RENDERED" class="x-el x-el-img c2-1 c2-2 c2-k c2-1b c2-1c c2-1d c2-w c2-y c2-s c2-1e c2-j c2-17 c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"></div></div><div data-ux="Block" data-aid="GALLERY_IMAGE1_CELL_RENDERED" class="x-el x-el-div c2-1 c2-2 c2-11 c2-r c2-12 c2-13 c2-14 c2-15 c2-3 c2-4 c2-5 c2-16 c2-6 c2-7 c2-8" style="position: absolute; transform: translate3d(413px, 0px, 0px);" data-packed=""><div data-ux="Block" class="x-el x-el-div c2-1 c2-2 c2-j c2-17 c2-k c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><img src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20370,cg%20true,m.webp" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20370,cg%20true,m.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20740,cg%20true,m.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%25201110,cg%2520true,m_003.webp 3x" data-ux="Image" data-aid="GALLERY_IMAGE1_RENDERED" class="x-el x-el-img c2-1 c2-2 c2-k c2-1b c2-1c c2-1d c2-w c2-y c2-s c2-1f c2-j c2-17 c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"></div></div><div data-ux="Block" data-aid="GALLERY_IMAGE2_CELL_RENDERED" class="x-el x-el-div c2-1 c2-2 c2-11 c2-r c2-12 c2-13 c2-14 c2-15 c2-3 c2-4 c2-5 c2-16 c2-6 c2-7 c2-8" style="position: absolute; transform: translate3d(826px, 0px, 0px);" data-packed=""><div data-ux="Block" class="x-el x-el-div c2-1 c2-2 c2-j c2-17 c2-k c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><img src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520370,cg%2520true_002.webp" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520370,cg%2520true_002.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520740,cg%2520true_002.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201110,cg%20true.webp 3x" data-ux="Image" data-aid="GALLERY_IMAGE2_RENDERED" class="x-el x-el-img c2-1 c2-2 c2-k c2-1b c2-1c c2-1d c2-w c2-y c2-s c2-1e c2-j c2-17 c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"></div></div><div data-ux="Block" data-aid="GALLERY_IMAGE3_CELL_RENDERED" class="x-el x-el-div c2-1 c2-2 c2-11 c2-r c2-12 c2-13 c2-14 c2-15 c2-3 c2-4 c2-5 c2-16 c2-6 c2-7 c2-8" style="position: absolute; transform: translate3d(0px, 278px, 0px);" data-packed=""><div data-ux="Block" class="x-el x-el-div c2-1 c2-2 c2-j c2-17 c2-k c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><img src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520370,cg%2520true,m_003.webp" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520370,cg%2520true,m_003.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520740,cg%2520true,m_002.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%25201110,cg%2520true,m_002.webp 3x" data-ux="Image" data-aid="GALLERY_IMAGE3_RENDERED" class="x-el x-el-img c2-1 c2-2 c2-k c2-1b c2-1c c2-1d c2-w c2-y c2-s c2-1e c2-j c2-17 c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"></div></div><div data-ux="Block" data-aid="GALLERY_IMAGE4_CELL_RENDERED" class="x-el x-el-div c2-1 c2-2 c2-11 c2-r c2-12 c2-13 c2-14 c2-15 c2-3 c2-4 c2-5 c2-16 c2-6 c2-7 c2-8" style="position: absolute; transform: translate3d(826px, 278px, 0px);" data-packed=""><div data-ux="Block" class="x-el x-el-div c2-1 c2-2 c2-j c2-17 c2-k c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><img src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520370,cg%2520true,m_002.webp" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520370,cg%2520true,m_002.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%2520740,cg%2520true,m_003.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%201110,cg%20true,m.webp 3x" data-ux="Image" data-aid="GALLERY_IMAGE4_RENDERED" class="x-el x-el-img c2-1 c2-2 c2-k c2-1b c2-1c c2-1d c2-w c2-y c2-s c2-1g c2-j c2-17 c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"></div></div><div data-ux="Block" data-aid="GALLERY_IMAGE5_CELL_RENDERED" class="x-el x-el-div c2-1 c2-2 c2-11 c2-r c2-12 c2-13 c2-14 c2-15 c2-3 c2-4 c2-5 c2-16 c2-6 c2-7 c2-8" style="position: absolute; transform: translate3d(413px, 285px, 0px);" data-packed=""><div data-ux="Block" class="x-el x-el-div c2-1 c2-2 c2-j c2-17 c2-k c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><img src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20370,cg%20true.webp" srcset="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20370,cg%20true.webp 1x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%20740,cg%20true.webp 2x, Ekatva%20-%20One%20Heart.%20Many%20Stories_files/rs=w%25201110,cg%2520true_003.webp 3x" data-ux="Image" data-aid="GALLERY_IMAGE5_RENDERED" class="x-el x-el-img c2-1 c2-2 c2-k c2-1b c2-1c c2-1d c2-w c2-y c2-s c2-1h c2-j c2-17 c2-1i c2-19 c2-1a c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"></div></div></div></div></div></span></div></div></section>  </div></div></div><div id="ec4d127c-32be-450d-9b17-5fd8fa28e456" class="widget widget-contact widget-contact-contact-1"><div data-ux="Widget" role="region" id="ec4d127c-32be-450d-9b17-5fd8fa28e456" class="x-el x-el-div x-el c1-1 c1-2 c1-3 c1-b c1-c c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div> <section data-ux="Section" class="x-el x-el-section c1-1 c1-2 c1-3 c1-h c1-i c1-72 c1-b c1-c c1-q c1-r c1-d c1-e c1-f c1-g"><div data-ux="Container" class="x-el x-el-div c1-1 c1-2 c1-z c1-10 c1-11 c1-12 c1-13 c1-b c1-c c1-14 c1-d c1-15 c1-e c1-16 c1-f c1-17 c1-g"><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-1a c1-1b c1-1c c1-1d c1-1e c1-1f c1-b c1-c c1-1g c1-1h c1-1i c1-1j c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-1m c1-13 c1-1n c1-1o c1-1p c1-1q c1-b c1-c c1-1t c1-1u c1-1v c1-1w c1-d c1-e c1-f c1-g"><h2 role="heading" aria-level="2" data-ux="SectionHeading" data-aid="CONTACT_SECTION_TITLE_REND" data-typography="HeadingBeta" class="x-el x-el-h2 c1-1 c1-2 c1-1s c1-1r c1-4b c1-2q c1-2r c1-1c c1-4c c1-4d c1-20 c1-22 c1-37 c1-2s c1-2u c1-4e c1-38 c1-4f c1-39 c1-3a c1-3b"><span data-ux="Element" class="x-el x-el-span c1-4g c1-4h c1-21 c1-s c1-45 c1-4i c1-22 c1-37 c1-4j c1-4k c1-k c1-4l c1-4m c1-4n c1-4o c1-4p c1-4q c1-4r c1-4s c1-4t c1-n c1-4u c1-4v c1-4w c1-4x c1-4y c1-4z c1-50 c1-38 c1-39 c1-3a c1-3b">Contact Us</span></h2></div></div><div data-ux="Content" class="x-el x-el-div c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-1a c1-1b c1-1c c1-1d c1-1e c1-1f c1-b c1-c c1-1g c1-1h c1-1i c1-1j c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-1k c1-1l c1-1m c1-13 c1-1n c1-1o c1-1p c1-1q c1-b c1-c c1-73 c1-74 c1-75 c1-1t c1-1u c1-1v c1-1w c1-d c1-1x c1-1y c1-1z c1-e c1-f c1-g"><div data-ux="Block" data-aid="CONTACT_INFO_CONTAINER_REND" class="x-el x-el-div c1-1 c1-2 c1-20 c1-1c c1-b c1-c c1-76 c1-1g c1-d c1-e c1-f c1-g"><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-4c c1-b c1-c c1-d c1-e c1-f c1-g"><h4 role="heading" aria-level="4" data-ux="ContentHeading" data-aid="CONTACT_INTRO_HEADING_REND" data-typography="HeadingDelta" class="x-el x-el-h4 c1-5p c1-5q c1-1s c1-1r c1-3x c1-2q c1-2r c1-1c c1-3i c1-c c1-b c1-2s c1-2u c1-d c1-e c1-f c1-g">Better yet, see us in person!</h4></div><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><a rel="noopener" data-ux-btn="external" data-ux="ButtonExternal" href="https://wa.me/919491696737" target="_blank" data-aid="CONTACT_INFO_WHATS_APP_REND" data-tccl="ux2.contact.whatsapp.click,click" icon="whatsApp" data-typography="false" class="x-el x-el-a c1-77 c1-c c1-78 c1-79 c1-7a c1-4c c1-7b c1-5g c1-34 c1-2h c1-2i c1-2j c1-2k c1-7c c1-7d c1-7e c1-7f c1-7g c1-7h c1-2g c1-7i c1-58 c1-20 c1-2e c1-1r c1-1s c1-s c1-7j c1-7k c1-7l c1-7m c1-7n c1-7o c1-1 c1-2 c1-7p c1-7q c1-7r c1-7s c1-7t c1-7u c1-7v c1-7w c1-7x c1-7y c1-7z"><span data-ux="Element" class="x-el x-el-span c1-c c1-79 c1-s c1-80 c1-2r c1-2c c1-2d"><span data-ux="Element" class="x-el x-el-span c1-81 c1-82 c1-33 c1-83 c1-36 c1-84 c1-85 c1-86 c1-87 c1-79 c1-c"><svg viewBox="0 0 24 24" fill="currentColor" width="24px" height="24px" data-ux="Icon" class="x-el x-el-svg c1-45 c1-21 c1-3m c1-79 c1-c"><svg viewBox="0 0 496 497"><defs><linearGradient id="a" x1="247.32" x2="247.32" y1="446.09" y2="39.9" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#20b038"></stop><stop offset="1" stop-color="#60d66a"></stop></linearGradient><linearGradient id="b" x1="247.32" x2="247.32" y1="453.37" y2="32.61" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#f9f9f9"></stop><stop offset="1" stop-color="#fff"></stop></linearGradient></defs><path d="M37.88 453.37l29.59-108A208 208 0 0 1 39.63 241.1c0-115 93.6-208.49 208.56-208.49a208.57 208.57 0 0 1 208.57 208.66c-.05 115-93.62 208.49-208.57 208.49h-.08a208.41 208.41 0 0 1-99.67-25.38zm115.68-66.73l6.34 3.75a173.18 173.18 0 0 0 88.23 24.16h.06c95.55 0 173.31-77.75 173.35-173.3A173.34 173.34 0 0 0 248.26 67.83c-95.62 0-173.38 77.73-173.42 173.28a172.94 172.94 0 0 0 26.5 92.23l4.13 6.55L88 403.84z"></path><path fill="url(#a)" d="M45.13 446.09l28.57-104.3a200.82 200.82 0 0 1-26.88-100.62c0-111 90.36-201.27 201.34-201.27A201.35 201.35 0 0 1 449.5 241.32c0 111-90.37 201.28-201.33 201.28h-.09a201.31 201.31 0 0 1-96.21-24.49z"></path><path fill="url(#b)" d="M37.88 453.37l29.59-108A208 208 0 0 1 39.63 241.1c0-115 93.6-208.49 208.56-208.49a208.57 208.57 0 0 1 208.57 208.66c-.05 115-93.62 208.49-208.57 208.49h-.08a208.41 208.41 0 0 1-99.67-25.38zm115.68-66.73l6.34 3.75a173.18 173.18 0 0 0 88.23 24.16h.06c95.55 0 173.31-77.75 173.35-173.3A173.34 173.34 0 0 0 248.26 67.83c-95.62 0-173.38 77.73-173.42 173.28a172.94 172.94 0 0 0 26.5 92.23l4.13 6.55L88 403.84z"></path><path fill="#fff" d="M196.07 153.94c-3.91-8.68-8-8.85-11.73-9-3-.14-6.51-.13-10-.13a19.15 19.15 0 0 0-13.89 6.52c-4.78 5.22-18.24 17.82-18.24 43.46s18.67 50.42 21.28 53.9 36.05 57.77 89 78.66c44 17.36 53 13.91 62.53 13s30.83-12.61 35.18-24.78 4.34-22.59 3-24.77-4.78-3.48-10-6.08-30.83-15.22-35.61-16.95-8.25-2.61-11.73 2.61-13.45 16.94-16.5 20.42-6.08 3.92-11.29 1.31-22-8.11-41.9-25.86c-15.5-13.82-26-30.87-29-36.09s-.32-8 2.29-10.63c2.34-2.34 5.21-6.09 7.82-9.13s3.47-5.21 5.21-8.69.87-6.52-.44-9.13-11.35-28.34-15.98-38.64z"></path></svg></svg></span><span data-ux="Element" class="x-el x-el-span iconText c1-c c1-79 c1-u c1-20 c1-88 c1-2r c1-2c c1-2d">Message us on WhatsApp</span></span></a></div></div></div></div></div></div></section>  </div></div></div><div id="8d7737b3-56da-40ec-ac8e-7576ad211a87" class="widget widget-footer widget-footer-footer-3"><div data-ux="Widget" role="contentinfo" id="8d7737b3-56da-40ec-ac8e-7576ad211a87" class="x-el x-el-div x-el c1-1 c1-2 c1-3 c1-b c1-c c1-d c1-e c1-f c1-g c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div> <section data-ux="Section" class="x-el x-el-section c1-1 c1-2 c1-3 c1-1n c1-89 c1-b c1-c c1-q c1-r c1-d c1-e c1-f c1-g"><div data-ux="Divider" class="x-el x-el-div c1-1 c1-2 c1-3 c1-8a c1-8b c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="Container" class="x-el x-el-div c1-1 c1-2 c1-z c1-10 c1-11 c1-12 c1-13 c1-b c1-c c1-14 c1-d c1-15 c1-e c1-16 c1-f c1-17 c1-g"><hr aria-hidden="true" role="separator" data-ux="HR" class="x-el x-el-hr c1-1 c1-2 c1-8c c1-72 c1-3p c1-1c c1-1e c1-4 c1-b c1-c c1-d c1-e c1-f c1-g"></div></div><div data-ux="Container" class="x-el x-el-div c1-1 c1-2 c1-z c1-10 c1-11 c1-12 c1-13 c1-b c1-c c1-14 c1-d c1-15 c1-e c1-16 c1-f c1-17 c1-g"><div data-ux="Layout" class="x-el x-el-div c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="Grid" class="x-el x-el-div c1-1 c1-2 c1-18 c1-19 c1-1a c1-1b c1-1c c1-2r c1-1e c1-2q c1-5g c1-20 c1-b c1-c c1-d c1-e c1-f c1-g"><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-8d c1-1l c1-53 c1-13 c1-1n c1-8e c1-1p c1-8f c1-b c1-c c1-d c1-8g c1-8h c1-e c1-f c1-g"><div data-ux="FooterDetails" data-aid="FOOTER_COPYRIGHT_RENDERED" data-typography="DetailsAlpha" class="x-el c1-1 c1-2 c1-1s c1-1r c1-5r c1-1c c1-1e c1-b c1-8i c1-8j c1-2u c1-8k c1-8l c1-8m c1-8n c1-8o x-rt"><p style="margin:0"><span>Copyright © 2023 Ekatva - One Heart. Many Stories - All Rights Reserved.</span></p></div></div><div data-ux="GridCell" class="x-el x-el-div c1-1 c1-2 c1-19 c1-8d c1-1l c1-53 c1-13 c1-1n c1-8e c1-1p c1-8f c1-b c1-c c1-d c1-8g c1-8h c1-e c1-f c1-g"><p data-ux="FooterDetails" data-aid="FOOTER_POWERED_BY_RENDERED" data-typography="DetailsAlpha" class="x-el x-el-p c1-1 c1-2 c1-1s c1-1r c1-5r c1-8p c1-1e c1-b c1-8i c1-8j c1-2u c1-8k c1-8q c1-8r c1-8m c1-8n c1-8o"><span>Powered by MaVi IT Solutions Pvt. Ltd.</span></p></div></div></div></div></section>  </div></div></div><div id="12d9e7b8-cab2-4d62-bd4d-a1b206cafc73" class="widget widget-popup widget-popup-popup-1"></div><div id="2da9bf99-75d7-4276-b8a5-d748664a939b" class="widget widget-cookie-banner widget-cookie-banner-cookie-1"><div data-ux="Group" data-aid="FOOTER_COOKIE_BANNER_RENDERED" id="2da9bf99-75d7-4276-b8a5-d748664a939b-banner" class="x-el x-el-div c1-1 c1-2 c1-8s c1-8t c1-8u c1-4 c1-3h c1-5k c1-t c1-3v c1-8v c1-8w c1-8x c1-8y c1-8z c1-8a c1-12 c1-8b c1-11 c1-1c c1-2r c1-1e c1-2q c1-3l c1-b c1-c c1-90 c1-91 c1-92 c1-93 c1-94 c1-95 c1-96 c1-d c1-e c1-f c1-g"><h4 role="heading" aria-level="4" data-ux="Heading" data-aid="FOOTER_COOKIE_TITLE_RENDERED" data-typography="HeadingDelta" class="x-el x-el-h4 c1-5p c1-5q c1-1s c1-1r c1-3x c1-2q c1-2r c1-1c c1-1e c1-7m c1-b c1-97 c1-c c1-2u c1-d c1-e c1-f c1-g">This website uses cookies.</h4><div data-ux="Text" data-aid="FOOTER_COOKIE_MESSAGE_RENDERED" data-typography="BodyAlpha" class="x-el c1-1 c1-2 c1-1s c1-1r c1-5r c1-1c c1-1e c1-98 c1-8v c1-b c1-99 c1-c c1-2u c1-9a c1-d c1-e c1-f c1-g x-rt"><p style="margin:0"><span>We
+ use cookies to analyze website traffic and optimize your website 
+experience. By accepting our use of cookies, your data will be 
+aggregated with all other user data.</span></p></div><div data-ux="Block" class="x-el x-el-div c1-1 c1-2 c1-18 c1-9b c1-b c1-c c1-d c1-e c1-f c1-g"><a data-ux-btn="primary" data-ux="ButtonPrimary" href="" data-aid="FOOTER_COOKIE_CLOSE_RENDERED" id="2da9bf99-75d7-4276-b8a5-d748664a939b-accept" data-typography="ButtonAlpha" class="x-el x-el-a c1-9c c1-5q c1-2e c1-4d c1-9d c1-s c1-9e c1-9f c1-9g c1-9h c1-9i c1-9j c1-9k c1-9l c1-9m c1-9n c1-9o c1-9p c1-9q c1-72 c1-9r c1-18 c1-5h c1-58 c1-2g c1-8p c1-9s c1-9t c1-9u c1-1k c1-3p c1-5g c1-20 c1-1r c1-1s c1-13 c1-4 c1-11 c1-12 c1-6r c1-6t c1-9v c1-7o c1-9w c1-97 c1-9x c1-b c1-46 c1-9y c1-9z c1-a0 c1-a1 c1-a2 c1-a3 c1-a4 c1-7v c1-a5 c1-a6 c1-a7 c1-a8" data-tccl="ux2.COOKIE_BANNER.cookie1.Group.Default.Button.Primary.110915.click,click"><span data-ux="Element" class="x-el x-el-span btnAddon c1-1 c1-2 c1-b c1-9z c1-a5 c1-a6 c1-a7 c1-a8"></span>Accept</a></div></div></div><div id="4e43d3b9-5ab8-40ee-9f57-6b7b31c41446" class="widget widget-messaging widget-messaging-messaging-1"><div data-ux="Element" id="bs-2" class="x-el x-el-div c1-1 c1-2 c1-b c1-c c1-d c1-e c1-f c1-g"><span data-ux="Element" class="x-el x-el-span c2-1 c2-2 c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><div data-ux="Block" class="x-el x-el-div c2-1 c2-2 c2-9 c2-a c2-b c2-c c2-d c2-e c2-3 c2-4 c2-5 c2-f c2-6 c2-7 c2-8"><style>.grecaptcha-badge { visibility: hidden; }</style><div data-ux="Block" data-aid="MESSAGING_FAB" data-edit-interactive="true" data-traffic2="pandc.vnext.editor_preview.messaging_fab_open.click" data-tccl="ux2.messaging.fab.open,click" class="x-el x-el-div c2-1 c2-2 c2-g c2-h c2-i c2-j c2-k c2-l c2-m c2-n c2-o c2-p c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><svg viewBox="0 0 24 24" fill="currentColor" width="44" height="44" data-ux="Icon" class="x-el x-el-svg c2-1 c2-2 c2-q c2-r c2-s c2-3 c2-4 c2-5 c2-6 c2-7 c2-8"><g fill="currentColor"><rect x="4" y="6" width="16" height="10.222" rx="1.129"></rect><path d="M8.977 18.578l.2-2.722a.564.564 0 01.564-.523h3.61c.548 0 .774.705.327 1.024l-3.81 2.721a.564.564 0 01-.89-.5z"></path></g></svg></div></div></span></div></div></div></div></div>
+<script type="text/javascript">"IntersectionObserver"in window&&"Intl"in window&&"Locale"in window.Intl||document.write(`\x3Cscript src="https://img1.wsimg.com/poly/v3/polyfill.min.js?rum=0&unknown=polyfill&flags=gated&features=Intl.~locale.en-IN">\x3C/script>`)</script>
+<script src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/script_002.js" crossorigin=""></script>
+<script src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/UX.4.34.11.js" crossorigin=""></script>
+<script src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/script.js" crossorigin=""></script><script type="text/javascript" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/tti.min.js"></script>
+<script defer="defer" src="Ekatva%20-%20One%20Heart.%20Many%20Stories_files/tccl.min.js" crossorigin=""></script><style type="text/css" data-glamor="cxs-media-sheet"></style></body></html>

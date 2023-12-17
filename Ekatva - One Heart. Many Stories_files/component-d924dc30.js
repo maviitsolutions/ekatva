@@ -1,0 +1,2 @@
+define("@wsb/guac-widget-shared/lib/components/DynamicFontScaler/component-d924dc30.js",["exports","~/c/dynamicFontScaler"],(function(e,t){"use strict";e.default=e=>{const[c]=(global.React||guac.react).useState(t.d(e));return(global.React||guac.react).useEffect((()=>{c.callback()}),[]),c.element},Object.defineProperty(e,"__esModule",{value:!0})})),"undefined"!=typeof window&&(window.global=window);
+//# sourceMappingURL=component-d924dc30.js.map
